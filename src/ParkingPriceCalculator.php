@@ -37,7 +37,9 @@ use DomainException;
  */
 class ParkingPriceCalculator
 {
-    private const ZONE = 'Europe/Warsaw';
+    private const string ZONE = 'Europe/Warsaw';
+
+    public const int MAX_PARKING_TIME_IN_MINUTES = 60 * 24 * 3;
 
     /**
      * @param PricingRule[] $rules
@@ -55,25 +57,68 @@ class ParkingPriceCalculator
         ?callable $roundingStrategy = null
     ): array
     {
-        $durationMinutes = $this->parseTimeAndGetDurationInMinutes($endAt, $startAt);
+        if(count($rules) === 0) {
+            throw new DomainException('Rules array cannot be empty', 1);
+        }
 
-        $results = [];
+        $durationMinutes = $this->parseTimeAndGetDurationInMinutes($startAt, $endAt);
+
+        if($durationMinutes > self::MAX_PARKING_TIME_IN_MINUTES) {
+            throw new DomainException('Parking time cannot be longer than 72 hours', 3);
+        }
+
+        $result = $this->calculateAndGetResultWithBestPrice($rules, $durationMinutes);
+        $resultRule = $rules[$result['rule_index']];
+
+        return [
+            'total' => $result['total'],
+            'currency' => 'PLN',
+            'rule_index' => $result['rule_index'],
+            'periods' => [
+                'period' => $resultRule['period'],
+                'first_period_price' => $resultRule['first_period_price'],
+                'next_periods_price' => $resultRule['next_periods_price'],
+                'consumed_first' => $result['consumed_first'],
+                'consumed_next' => $result['consumed_next'],
+            ],
+        ];
+    }
+
+    /**
+     * @param PricingRule[] $rules
+     * @param int $durationMinutes
+     * @return array{total: int, consumed_first: int, consumed_next: int, rule_index: int}
+     */
+    private function calculateAndGetResultWithBestPrice(array $rules, int $durationMinutes): array
+    {
+        $bestResult = null;
+        $ruleIndex = null;
 
         foreach ($rules as $index => $rule) {
-            $result = $this->calculateForRule($rule, $durationMinutes, $index);
-            $results[] = $result;
+            $result = $this->calculateForRule($rule, $durationMinutes);
+
+            //todo add period handling
+            if($bestResult && $result['total'] > $bestResult['total']) {
+                continue;
+            }
+
+            $ruleIndex = $index;
+            $bestResult = $result;
         }
-        usort($results, static fn($a, $b) => $a['total'] <=> $b['total']);
-        return $results[0];
+        /** @var array{total: int, consumed_first: int, consumed_next: int} $bestPriceResult   */
+
+        return [
+            'rule_index' => $ruleIndex,
+            ...$bestResult
+        ];
     }
 
     /**
      * @param PricingRule $rule
      * @param int $durationMinutes
-     * @param int $ruleIndex
-     * @return ParkingCalculationResult
+     * @return array{total: int, consumed_first: int, consumed_next: int}
      */
-    private function calculateForRule(array $rule, int $durationMinutes, int $ruleIndex): array
+    private function calculateForRule(array $rule, int $durationMinutes): array
     {
         $period = $rule['period'];
         $firstPrice = $rule['price_first_period'];
@@ -87,51 +132,29 @@ class ParkingPriceCalculator
 
         return [
             'total' => $total,
-            'currency' => 'PLN',
-            'rule_index' => $ruleIndex,
-            'periods' => [
-                'period' => $period,
-                'first_period_price' => $firstPrice,
-                'next_periods_price' => $nextPrice,
-                'consumed_first' => $consumedFirst,
-                'consumed_next' => $consumedNext,
-            ],
-            'notes' => [
-                'used_window:08:00-18:00',
-                'dst:fall_back_overlap_handled',
-            ],
+            'consumed_first' => $consumedFirst,
+            'consumed_next' => $consumedNext,
         ];
     }
-    private function parseToWarsaw(string $datetime): CarbonImmutable
+    private function parseDateTime(string $datetime): CarbonImmutable
     {
-        $hasOffset = (bool) preg_match('/([zZ]|[+\-]\d{2}(:?\d{2})?)$/', $datetime);
-
-        if ($hasOffset) {
-            return CarbonImmutable::parse($datetime)->setTimezone(self::ZONE);
-        }
-
         return CarbonImmutable::parse($datetime, self::ZONE);
     }
 
     private function parseTimeAndGetDurationInMinutes(string $startAt, string $endAt): int
     {
-        $startParsed = $this->parseToWarsaw($startAt);
-        $endParsed = $this->parseToWarsaw($endAt);
-
-        if($endParsed->greaterThan($startParsed)) {
-            throw new DomainException('endAt must be greater than startAt', 0);
+        $minutes =  $this->getDurationInMinutes(
+            $this->parseDateTime($startAt),
+            $this->parseDateTime($endAt)
+        );
+        if($minutes <= 0) {
+            throw new DomainException('endAt must be greater than startAt', 2);
         }
-
-        return $this->getDurationInMinutes($startParsed, $endParsed);
+        return $minutes;
     }
 
-    /**
-     * @param DateTimeImmutable $endAt
-     * @param DateTimeImmutable $startAt
-     * @return int
-     */
-    private function getDurationInMinutes(DateTimeImmutable $endAt, DateTimeImmutable $startAt): int
+    private function getDurationInMinutes(CarbonImmutable $startAt, CarbonImmutable $endAt): int
     {
-        return (int)round(($endAt->getTimestamp() - $startAt->getTimestamp()) / 60);
+        return (int)round($startAt->diffInMinutes($endAt));
     }
 }
