@@ -21,6 +21,10 @@ use DomainException;
  *     blackout_dates?: DateTimeImmutable[]
  * }
  *
+ * @phpstan-type RuleCalcResult array{total: int, consumed_first: int, consumed_next: int, rule: PricingRule}
+ *
+ * @phpstan-type RoundingStrategy callable(int): int
+ *
  * @phpstan-type ParkingCalculationResult array{
  *      total: int,
  *      currency: string,
@@ -37,16 +41,16 @@ use DomainException;
  */
 class ParkingPriceCalculator
 {
-    private const string ZONE = 'Europe/Warsaw';
+    private const ZONE = 'Europe/Warsaw';
 
-    public const int MAX_PARKING_TIME_IN_MINUTES = 60 * 24 * 3;
+    public const int|float MAX_PARKING_TIME_IN_MINUTES = 60 * 24 * 3;
 
     /**
      * @param PricingRule[] $rules
      * @param string $startAt
      * @param string $endAt
      * @param string $currency
-     * @param callable|null $roundingStrategy
+     * @param RoundingStrategy|null $roundingStrategy
      * @return ParkingCalculationResult
      */
     public function __invoke(
@@ -57,17 +61,17 @@ class ParkingPriceCalculator
         ?callable $roundingStrategy = null
     ): array
     {
-        if(count($rules) === 0) {
+        if (count($rules) === 0) {
             throw new DomainException('Rules array cannot be empty', 1);
         }
 
         $durationMinutes = $this->parseTimeAndGetDurationInMinutes($startAt, $endAt);
 
-        if($durationMinutes > self::MAX_PARKING_TIME_IN_MINUTES) {
+        if ($durationMinutes > self::MAX_PARKING_TIME_IN_MINUTES) {
             throw new DomainException('Parking time cannot be longer than 72 hours', 3);
         }
 
-        $result = $this->calculateAndGetResultWithBestPrice($rules, $durationMinutes);
+        $result = $this->calculateAndGetResultWithBestPrice($rules, $durationMinutes, $this->getRoundingStrategyWithDefault($roundingStrategy));
         $resultRule = $rules[$result['rule_index']];
 
         return [
@@ -87,76 +91,56 @@ class ParkingPriceCalculator
     /**
      * @param PricingRule[] $rules
      * @param int $durationMinutes
+     * @param RoundingStrategy $roundingStrategy
      * @return array{total: int, consumed_first: int, consumed_next: int, rule_index: int}
      */
-    private function calculateAndGetResultWithBestPrice(array $rules, int $durationMinutes): array
+    private function calculateAndGetResultWithBestPrice(array $rules, int $durationMinutes, callable $roundingStrategy): array
     {
         $bestResult = null;
         $ruleIndex = null;
 
         foreach ($rules as $index => $rule) {
-            $result = $this->calculateForRule($rule, $durationMinutes);
+            $result = $this->calculateForRule($rule, $durationMinutes, $roundingStrategy);
 
-            //todo add period handling
-            if($bestResult && $result['total'] > $bestResult['total']) {
+            if (!$this->isOptimalRule($bestResult, $result)) {
                 continue;
             }
 
             $ruleIndex = $index;
             $bestResult = $result;
         }
-        /** @var array{total: int, consumed_first: int, consumed_next: int} $bestPriceResult   */
+        /** @var RuleCalcResult $bestPriceResult */
 
         return [
             'rule_index' => $ruleIndex,
             ...$bestResult
         ];
     }
+
     /**
      * @param PricingRule $rule
      * @param int $durationMinutes
-     * @return array{
-     *   total: int,
-     *   consumed_first: int,
-     *   consumed_next: int
-     * }
+     * @param RoundingStrategy $roundingStrategy
+     * @return RuleCalcResult
      */
-    private function calculateForRule(array $rule, int $durationMinutes): array
+    private function calculateForRule(array $rule, int $durationMinutes, callable $roundingStrategy): array
     {
-        $periods = [
-            'consumed_first' => [
-                'length' => $rule['period'],
-                'price' => $rule['price_first_period'],
-                'max_consumable' => 1,
-            ],
-            'consumed_next' => [
-                'length' => $rule['period'],
-                'price' => $rule['price_next_periods'],
-                'max_consumable' => null,
-            ],
+        $period = $rule['period'];
+        $firstPrice = $rule['price_first_period'];
+        $nextPrice = $rule['price_next_periods'];
+
+        $consumedFirst = $durationMinutes > 0 ? 1 : 0;
+        $remaining = max(0, $durationMinutes - $period);
+        $consumedNext = $roundingStrategy($remaining / $period);
+
+        $total = ($consumedFirst ? $firstPrice : 0) + $consumedNext * $nextPrice;
+
+        return [
+            'total' => $total,
+            'consumed_first' => $consumedFirst,
+            'consumed_next' => $consumedNext,
+            'rule' => $rule
         ];
-
-        $remainingMinutes = $durationMinutes;
-        $total = 0;
-        $consumed = [];
-
-        foreach ($periods as $key => $period) {
-            if ($remainingMinutes <= 0) {
-                $consumed[$key] = 0;
-                continue;
-            }
-
-            $count = (int) ceil($remainingMinutes / $period['length']);
-            if ($period['max_consumable'] !== null) {
-                $count = min($count, $period['max_consumable']);
-            }
-
-            $consumed[$key] = $count;
-            $total += $count * $period['price'];
-            $remainingMinutes -= $count * $period['length'];
-        }
-
-        return array_merge(['total' => $total], $consumed);
     }
 
     private function parseDateTime(string $datetime): CarbonImmutable
@@ -164,13 +148,26 @@ class ParkingPriceCalculator
         return CarbonImmutable::parse($datetime, self::ZONE);
     }
 
+    /**
+     * @param RoundingStrategy|null $roundingStrategy
+     * @return RoundingStrategy
+     */
+    private function getRoundingStrategyWithDefault(?callable $roundingStrategy = null): callable
+    {
+        if (!$roundingStrategy) {
+            return static fn(int $x) => (int)ceil($x);
+        }
+
+        return $roundingStrategy;
+    }
+
     private function parseTimeAndGetDurationInMinutes(string $startAt, string $endAt): int
     {
-        $minutes =  $this->getDurationInMinutes(
+        $minutes = $this->getDurationInMinutes(
             $this->parseDateTime($startAt),
             $this->parseDateTime($endAt)
         );
-        if($minutes <= 0) {
+        if ($minutes <= 0) {
             throw new DomainException('endAt must be greater than startAt', 2);
         }
         return $minutes;
@@ -179,5 +176,30 @@ class ParkingPriceCalculator
     private function getDurationInMinutes(CarbonImmutable $startAt, CarbonImmutable $endAt): int
     {
         return (int)round($startAt->diffInMinutes($endAt));
+    }
+
+    /**
+     * @param ?RuleCalcResult $best
+     * @param RuleCalcResult $current
+     * @return bool
+     */
+    private function isOptimalRule(?array $best, array $current): bool
+    {
+        if(!$best) {
+            return true;
+        }
+        if($current['total'] < $best['total']) {
+            return  true;
+        }
+
+        if($current['rule']['price_first_period'] < $best['rule']['price_first_period']) {
+            return true;
+        }
+
+        if($current['rule']['period'] < $best['rule']['period']) {
+            return true;
+        }
+
+        return false;
     }
 }
