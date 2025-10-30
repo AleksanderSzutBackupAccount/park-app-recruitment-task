@@ -112,30 +112,53 @@ class ParkingPriceCalculator
             ...$bestResult
         ];
     }
-
     /**
      * @param PricingRule $rule
      * @param int $durationMinutes
-     * @return array{total: int, consumed_first: int, consumed_next: int}
+     * @return array{
+     *   total: int,
+     *   consumed_first: int,
+     *   consumed_next: int
+     * }
      */
     private function calculateForRule(array $rule, int $durationMinutes): array
     {
-        $period = $rule['period'];
-        $firstPrice = $rule['price_first_period'];
-        $nextPrice = $rule['price_next_periods'];
-
-        $consumedFirst = $durationMinutes > 0 ? 1 : 0;
-        $remaining = max(0, $durationMinutes - $period);
-        $consumedNext = (int) ceil($remaining / $period);
-
-        $total = ($consumedFirst ? $firstPrice : 0) + $consumedNext * $nextPrice;
-
-        return [
-            'total' => $total,
-            'consumed_first' => $consumedFirst,
-            'consumed_next' => $consumedNext,
+        $periods = [
+            'consumed_first' => [
+                'length' => $rule['period'],
+                'price' => $rule['price_first_period'],
+                'max_consumable' => 1,
+            ],
+            'consumed_next' => [
+                'length' => $rule['period'],
+                'price' => $rule['price_next_periods'],
+                'max_consumable' => null,
+            ],
         ];
+
+        $remainingMinutes = $durationMinutes;
+        $total = 0;
+        $consumed = [];
+
+        foreach ($periods as $key => $period) {
+            if ($remainingMinutes <= 0) {
+                $consumed[$key] = 0;
+                continue;
+            }
+
+            $count = (int) ceil($remainingMinutes / $period['length']);
+            if ($period['max_consumable'] !== null) {
+                $count = min($count, $period['max_consumable']);
+            }
+
+            $consumed[$key] = $count;
+            $total += $count * $period['price'];
+            $remainingMinutes -= $count * $period['length'];
+        }
+
+        return array_merge(['total' => $total], $consumed);
     }
+
     private function parseDateTime(string $datetime): CarbonImmutable
     {
         return CarbonImmutable::parse($datetime, self::ZONE);
