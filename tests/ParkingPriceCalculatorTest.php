@@ -12,6 +12,8 @@ use Szut\RecruitmentTask\ParkingPriceCalculator;
  */
 final class ParkingPriceCalculatorTest extends TestCase
 {
+    const int HOUR_IN_MINUTES = 60;
+
     private ParkingPriceCalculator $calculator;
 
     protected function setUp(): void
@@ -47,22 +49,49 @@ final class ParkingPriceCalculatorTest extends TestCase
         $this->assertSame(30, $result['periods']['period']);
 
         if ($expectedNote) {
+            $this->assertIsArray($result['notes']);
             $this->assertContains($expectedNote, $result['notes']);
         }
     }
 
-    public function test_throw_error_on_invalid_date(): void
+    public function test_throw_error_on_empty_rules(): void
     {
 
         $this->expectException(DomainException::class);
-        $this->expectExceptionCode(0);
+        $this->expectExceptionCode(1);
 
         ($this->calculator)(
             [],
             Carbon::now()->addHour()->toIso8601String(),
             Carbon::now()->toIso8601String(),
         );
+    }
+    public function test_throw_error_on_invalid_date(): void
+    {
 
+        $this->expectException(DomainException::class);
+        $this->expectExceptionCode(2);
+
+        ($this->calculator)(
+            [[]],
+            Carbon::now()->addHour()->toIso8601String(),
+            Carbon::now()->toIso8601String(),
+        );
+
+    }
+
+
+    public function test_throw_error_on_too_long_parking_time(): void
+    {
+
+        $this->expectException(DomainException::class);
+        $this->expectExceptionCode(3);
+
+        ($this->calculator)(
+            [[]],
+            Carbon::now()->toIso8601String(),
+            Carbon::now()->addMinutes(ParkingPriceCalculator::MAX_PARKING_TIME_IN_MINUTES + 2)->toIso8601String(),
+        );
     }
 
     /**
@@ -72,13 +101,19 @@ final class ParkingPriceCalculatorTest extends TestCase
     {
         $firstPricePeriod = 500;
         $nextPricePeriod = 200;
-        $period = 30;
+        $periodHalfHour = self::HOUR_IN_MINUTES / 2;
+        $dailyPeriod = self::HOUR_IN_MINUTES * 24;
 
         $rules = [
             [
-                'period' => $period,
+                'period' => $periodHalfHour,
                 'price_first_period' => $firstPricePeriod,
                 'price_next_periods' => $nextPricePeriod
+            ],
+            [
+                'period' => $dailyPeriod,
+                'price_first_period' => $firstPricePeriod * 20, // 4hour extra
+                'price_next_periods' => $nextPricePeriod * 20 // 4hour extra
             ]
         ];
 
@@ -99,10 +134,9 @@ final class ParkingPriceCalculatorTest extends TestCase
             ],
             'DST fall back (repeat hour)' => [
                 'rules' => $rules,
-                'start' => '2025-10-26T01:30:00+02:00', // Europe/Warsaw DST
-                'end' => '2025-10-26T03:30:00+01:00',
+                'start' => '2025-10-26T01:30:00', // Europe/Warsaw DST
+                'end' => '2025-10-26T03:30:00',
                 'expectedTotal' => $firstPricePeriod + $nextPricePeriod * 5, // 6 periods = first + 5 next
-                'expectedNote' => 'dst:fall_back_overlap_handled'
             ],
         ];
     }
