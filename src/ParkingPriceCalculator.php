@@ -154,7 +154,7 @@ class ParkingPriceCalculator
      */
     private function getRoundingStrategyWithDefault(?callable $roundingStrategy = null): callable
     {
-        if (!$roundingStrategy) {
+        if (null === $roundingStrategy) {
             return static fn(int $x) => (int)ceil($x);
         }
 

@@ -12,7 +12,7 @@ use Szut\RecruitmentTask\ParkingPriceCalculator;
  */
 final class ParkingPriceCalculatorTest extends TestCase
 {
-    const int HOUR_IN_MINUTES = 60;
+    private const int HOUR_IN_MINUTES = 60;
 
     private ParkingPriceCalculator $calculator;
 
@@ -36,8 +36,7 @@ final class ParkingPriceCalculatorTest extends TestCase
         string  $end,
         int     $expectedTotal,
         ?string $expectedNote = null
-    ): void
-    {
+    ): void {
         $result = ($this->calculator)(
             $rules,
             $start,
@@ -56,7 +55,6 @@ final class ParkingPriceCalculatorTest extends TestCase
 
     public function test_throw_error_on_empty_rules(): void
     {
-
         $this->expectException(DomainException::class);
         $this->expectExceptionCode(1);
 
@@ -66,9 +64,9 @@ final class ParkingPriceCalculatorTest extends TestCase
             Carbon::now()->toIso8601String(),
         );
     }
+
     public function test_throw_error_on_invalid_date(): void
     {
-
         $this->expectException(DomainException::class);
         $this->expectExceptionCode(2);
 
@@ -77,13 +75,10 @@ final class ParkingPriceCalculatorTest extends TestCase
             Carbon::now()->addHour()->toIso8601String(),
             Carbon::now()->toIso8601String(),
         );
-
     }
-
 
     public function test_throw_error_on_too_long_parking_time(): void
     {
-
         $this->expectException(DomainException::class);
         $this->expectExceptionCode(3);
 
@@ -136,7 +131,55 @@ final class ParkingPriceCalculatorTest extends TestCase
                 'rules' => $rules,
                 'start' => '2025-10-26T01:30:00', // Europe/Warsaw DST
                 'end' => '2025-10-26T03:30:00',
-                'expectedTotal' => $firstPricePeriod + $nextPricePeriod * 5, // 6 periods = first + 5 next
+                'expectedTotal' => $firstPricePeriod + $nextPricePeriod * 5,
+            ],
+        ];
+    }
+
+    /**
+     * @param callable $roundingStrategy
+     * @param float $minutes
+     * @param int $expectedConsumed
+     */
+    #[DataProvider('provideRoundingStrategies')]
+    public function test_rounding_strategies(callable $roundingStrategy, float $minutes, int $expectedConsumed): void
+    {
+        $rule = [
+            'period' => 30,
+            'price_first_period' => 500,
+            'price_next_periods' => 200
+        ];
+
+        $method = new ReflectionMethod(ParkingPriceCalculator::class, 'calculateForRule');
+        $method->setAccessible(true);
+
+        $result = $method->invoke(
+            $this->calculator,
+            $rule,
+            (int)$minutes,
+            $roundingStrategy
+        );
+
+        $this->assertSame($expectedConsumed, $result['consumed_next']);
+    }
+
+    public static function provideRoundingStrategies(): array
+    {
+        return [
+            'ceil strategy' => [
+                fn(int|float $x): int => (int)ceil($x),
+                31,
+                1
+            ],
+            'floor strategy' => [
+                fn(int|float $x): int => (int)floor($x),
+                59,
+                0
+            ],
+            'custom half strategy' => [
+                fn(int|float $x): int => (int)($x >= 0.5 ? ceil($x) : floor($x)),
+                45,
+                1
             ],
         ];
     }

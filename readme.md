@@ -1,1 +1,1 @@
-Zadanie rekrutacyjne
+Wykonałem główną część zadania, wraz z edge casami i testami na nie. Zacząłem robić część opcjonalną tego zadania
